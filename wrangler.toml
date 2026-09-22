@@ -5,3 +5,4 @@ compatibility_date = "2026-09-22"
 [vars]
 SHOPIFY_STORE_DOMAIN = "intern-vp-test-store.myshopify.com"
 SHOPIFY_API_VERSION = "2026-07"
+SHOPIFY_WEBHOOK_URL = "https://shopify-order-middleware.viktoria-porfenovich.workers.dev/webhooks/orders-create"

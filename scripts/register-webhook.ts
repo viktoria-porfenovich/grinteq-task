@@ -1,10 +1,11 @@
-import { readDevVars } from "./read-dev-vars";
+import { loadVars, requireVar } from "./read-dev-vars";
 
-const secrets = readDevVars();
-const shop = "intern-vp-test-store.myshopify.com";
-const apiVersion = "2026-07";
-const callbackUrl =
-  "https://shopify-order-middleware.viktoria-porfenovich.workers.dev/webhooks/orders-create";
+const vars = loadVars();
+const shop = requireVar(vars, "SHOPIFY_STORE_DOMAIN");
+const apiVersion = vars.SHOPIFY_API_VERSION || "2026-07";
+const callbackUrl = requireVar(vars, "SHOPIFY_WEBHOOK_URL");
+const clientId = requireVar(vars, "SHOPIFY_CLIENT_ID");
+const clientSecret = requireVar(vars, "SHOPIFY_CLIENT_SECRET");
 
 async function graphql(token: string, query: string, variables?: object) {
   const res = await fetch(
@@ -27,8 +28,8 @@ async function main() {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "client_credentials",
-      client_id: secrets.SHOPIFY_CLIENT_ID!,
-      client_secret: secrets.SHOPIFY_CLIENT_SECRET!,
+      client_id: clientId,
+      client_secret: clientSecret,
     }),
   });
   const tokenJson = await tokenRes.json();

@@ -62,6 +62,7 @@ Shopify Dev Dashboard (app and store in the **same organization**):
 | `SHOPIFY_API_VERSION` | `wrangler.toml` `[vars]` | Admin API version (`2026-07`) |
 | `SHOPIFY_CLIENT_ID` | `.dev.vars` / Wrangler secret | App client id for the token exchange |
 | `SHOPIFY_CLIENT_SECRET` | `.dev.vars` / Wrangler secret | HMAC verification **and** token exchange |
+| `SHOPIFY_WEBHOOK_URL` | `wrangler.toml` `[vars]` | Public Worker URL used by `npm run register-webhook` |
 
 There is no stored `SHOPIFY_ACCESS_TOKEN`. The Worker fetches one per metafield write. There is no separate webhook secret; HMAC uses `SHOPIFY_CLIENT_SECRET`.
 

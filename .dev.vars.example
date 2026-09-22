@@ -4,3 +4,8 @@
 
 SHOPIFY_CLIENT_ID=
 SHOPIFY_CLIENT_SECRET=
+
+# Optional overrides; defaults come from wrangler.toml [vars]
+# SHOPIFY_STORE_DOMAIN=
+# SHOPIFY_API_VERSION=
+# SHOPIFY_WEBHOOK_URL=
