@@ -1,70 +1,76 @@
 # Shopify order webhook middleware
 
-Receives Shopify `orders/create` webhooks, verifies the request, strips customer PII, and writes a sanitized payload back onto the order as a metafield.
-
-This repo is a local Express stand-in for the production shape: a serverless function behind an HTTP gateway.
+Cloudflare Worker that receives Shopify `orders/create` webhooks, verifies they came from Shopify, strips customer PII, and writes the sanitized payload back onto the order as a metafield.
 
 ## Architecture
 
 ```
 Shopify
   → webhook (orders/create)
-  → function (Express locally; Lambda in production)
-  → HMAC validation
-  → PII sanitization
-  → Shopify Admin API
+  → Cloudflare Worker
+  → HMAC validation (Client secret)
+  → PII sanitization (allowlist)
+  → Shopify Admin API (client credentials token)
   → order metafield (middleware.sanitized_payload)
 ```
 
-Shopify signs the raw body with the app secret. The handler keeps that raw buffer (`express.json` `verify` hook) and compares `X-Shopify-Hmac-SHA256` with `crypto.timingSafeEqual`. Only after that does it sanitize the order and call Admin GraphQL `metafieldsSet` on `gid://shopify/Order/{id}`.
+Shopify signs the raw body with the app **Client secret** and sends `X-Shopify-Hmac-SHA256`. The Worker reads `request.arrayBuffer()` once, verifies that HMAC, then sanitizes. It is not a separate “webhook token”; the Admin access token is fetched later and only used for GraphQL.
 
-Auth uses the [client credentials grant](https://shopify.dev/docs/apps/build/authentication-authorization/client-credentials-grant): Client ID + Client secret are exchanged for a short-lived access token. That token is what goes in `X-Shopify-Access-Token`. Client ID/secret are never sent to GraphQL.
+Auth uses the [client credentials grant](https://shopify.dev/docs/apps/build/authentication-authorization/client-credentials-grant). Client ID and Client secret are exchanged for a short-lived access token (`X-Shopify-Access-Token`). They are never sent to GraphQL.
 
 ## Sensitive data
 
 The sanitizer is an **allowlist** of operational fields (order id, number, totals, statuses, SKUs, quantities) plus `customer.id` as a non-identifying join key.
 
-These are dropped:
-
-| Field | Why |
+| Dropped | Why |
 |---|---|
 | `email` / `contact_email` | Direct contact identifier |
 | `phone` | Direct contact identifier |
-| `customer` object | Name, email, phone, default address — a PII bundle. Only `customer.id` is kept. |
-| `billing_address` / `shipping_address` | Home/work location, often with name and phone |
-| `client_details` / `browser_ip` | Device and network identifiers, not needed to process the order |
+| `customer` object | Name, email, phone, default address. Only `customer.id` is kept. |
+| `billing_address` / `shipping_address` | Physical location, often with name and phone |
+| `client_details` / `browser_ip` | Device and network identifiers |
 
-Also stripped: notes, payment instruments, and line-item `properties` (custom checkout fields often hold gift messages or names).
+Also omitted: notes, payment instruments, and line-item `properties` (custom checkout fields often hold names or gift messages).
 
-An allowlist is used instead of deleting known fields because Shopify order payloads are nested and change over API versions. A denylist misses new keys (`contact_email`, `default_address`, `properties`). If a field is not explicitly required downstream, it is not kept.
+An allowlist is used instead of deleting known fields because Shopify payloads are nested and change across API versions. A denylist misses new keys. If a field is not required downstream, it is not kept.
 
 ## Local setup
 
 ```bash
 npm install
-cp .env.example .env
+cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-The server listens on `http://localhost:3000`.
+Wrangler serves `http://127.0.0.1:8787`. Secrets come from `.dev.vars`. Store domain and API version come from `wrangler.toml` `[vars]`.
 
-Shopify Dev Dashboard (same organization as the store):
+Shopify Dev Dashboard (app and store in the **same organization**):
 
 1. Create an app and a version.
-2. **App URL:** `https://shopify.dev/apps/default-app-home` (this app has no Admin UI).
-3. Scopes: `read_orders`, `write_orders`.
+2. **App URL:** `https://shopify.dev/apps/default-app-home` (no Admin UI). Do not use the Worker host here.
+3. Scopes: `read_orders`, `write_orders` (and `write_order_metafields` if the dashboard lists it).
 4. Release and install on the store. The store must appear under **Dev stores**.
-5. Create an Order metafield definition: namespace `middleware`, key `sanitized_payload`, type JSON.
+5. Order metafield definition: namespace `middleware`, key `sanitized_payload`, type JSON.
+
+**App URL** is a GET page when someone opens the app. **Webhook URL** is a POST when an order is created. They are not the same.
 
 ## Environment variables
 
-| Variable | Role |
-|---|---|
-| `SHOPIFY_STORE_DOMAIN` | Store hostname, e.g. `your-store.myshopify.com` |
-| `SHOPIFY_CLIENT_SECRET` | App secret. Verifies webhook HMAC. Also used in the token exchange. |
-| `SHOPIFY_CLIENT_ID` | App client id. Used with the secret to obtain an access token. |
-| `SHOPIFY_ACCESS_TOKEN` | Not stored. Fetched at runtime via client credentials and cached until shortly before expiry. A static `shpat_` token would work for a legacy custom app; Dev Dashboard apps do not expose one. |
-| `SHOPIFY_API_VERSION` | Optional. Defaults to `2026-07`. |
+| Variable | Where | Role |
+|---|---|---|
+| `SHOPIFY_STORE_DOMAIN` | `wrangler.toml` `[vars]` | Store hostname, e.g. `your-store.myshopify.com` |
+| `SHOPIFY_API_VERSION` | `wrangler.toml` `[vars]` | Admin API version (`2026-07`) |
+| `SHOPIFY_CLIENT_ID` | `.dev.vars` / Wrangler secret | App client id for the token exchange |
+| `SHOPIFY_CLIENT_SECRET` | `.dev.vars` / Wrangler secret | HMAC verification **and** token exchange |
+
+There is no stored `SHOPIFY_ACCESS_TOKEN`. The Worker fetches one per metafield write. There is no separate webhook secret; HMAC uses `SHOPIFY_CLIENT_SECRET`.
+
+Production:
+
+```bash
+npx wrangler secret put SHOPIFY_CLIENT_ID
+npx wrangler secret put SHOPIFY_CLIENT_SECRET
+```
 
 ## Testing
 
@@ -72,19 +78,17 @@ Shopify Dev Dashboard (same organization as the store):
 npm test
 ```
 
-HMAC is over the **exact bytes** of `test-order.json`, not a re-serialized object. The file `id` must be a real order id on the store.
+### Local curl
 
-1. Start the server: `npm run dev`
-2. Sign the fixture:
+HMAC is over the exact bytes of `test-order.json`. The `id` must exist on the store.
 
 ```bash
 npm run hmac
+npm run dev
 ```
 
-3. POST the same file (new terminal):
-
 ```bash
-curl -i http://localhost:3000/webhooks/orders-create \
+curl -i http://127.0.0.1:8787/webhooks/orders-create \
   -H "Content-Type: application/json" \
   -H "X-Shopify-Hmac-SHA256: PASTE_HMAC_HERE" \
   --data-binary @test-order.json
@@ -92,21 +96,30 @@ curl -i http://localhost:3000/webhooks/orders-create \
 
 Use `--data-binary`. If you edit the JSON, regenerate the HMAC.
 
-**Pass:** `200`, response body has no email/phone/address, and the order in Admin shows `middleware.sanitized_payload`.
+### Live Shopify order
 
-**Fail:** `401` means HMAC or secret mismatch. `500` with `Access denied for metafieldsSet` means scopes were not granted on the installed app version. A token request that returns HTML usually means the store is not in the Dev Dashboard org.
+```bash
+npx wrangler deploy
+npm run register-webhook
+npx wrangler tail shopify-order-middleware
+```
 
-Live Shopify webhooks cannot hit `localhost`. Tunnel the server and subscribe `orders/create` to `https://<tunnel>/webhooks/orders-create`. App URL stays the default home URL above.
+Webhook URL (not App URL):
+
+```
+https://shopify-order-middleware.<account>.workers.dev/webhooks/orders-create
+```
+
+Create a real order in Admin. Tail should show `path: "/webhooks/orders-create"`, `hasHmac: true`, `status: 200`. The order metafield `middleware.sanitized_payload` should contain the sanitized JSON.
+
+`POST /` with `404` means something hit the Worker root (often App URL). That is not `orders/create`.
 
 ## Production considerations
 
-This local Express process would not be the production runtime.
-
-- **AWS Lambda + API Gateway** instead of a long-running Express server. Gateway terminates TLS and forwards `POST /webhooks/orders-create`.
-- **Secrets Manager** for `SHOPIFY_CLIENT_SECRET` / client id, not a `.env` file on disk.
-- **Webhook idempotency** keyed on `X-Shopify-Webhook-Id`. Shopify retries; metafield writes should be safe to repeat, but duplicate work and duplicate logs should not be.
-- **Retries** belong after a fast `200` to Shopify. The handler today awaits Admin API inside the request and returns `500` on failure. Production would ACK the webhook, then retry independently (Lambda destination, DLQ).
-- **Logging / monitoring** on verify failures vs Admin API errors, with order id only. **Do not log raw customer/order payloads** — not `req.body`, not the webhook fixture, not HTML error pages that might contain tokens.
-- **SQS** (or similar) if the sanitized order is destined for a third party, not only a Shopify metafield. The webhook function enqueues; a worker calls the destination with its own retry policy.
-- **OAuth** (or token exchange) if more than one merchant store is supported. Client credentials only work for stores in *your* organization.
-- Return an empty `200` to Shopify. Do not echo the sanitized order in the webhook response.
+- **Secrets** stay in Wrangler secrets, not `[vars]` or git.
+- **Idempotency** keyed on `X-Shopify-Webhook-Id`. Shopify retries.
+- **ACK then work:** this Worker awaits Admin API inside the request. A queue (Cloudflare Queues / SQS) would return `200` faster and retry independently.
+- **Do not log raw payloads.** Logs here are path, topic, shop, HMAC present, order id, status.
+- **OAuth / token exchange** if more than one merchant store. Client credentials only work for stores in *your* organization.
+- Return an empty `200` to Shopify in production; the JSON body is for debugging.
+- AWS Lambda + API Gateway is an alternative serverless host with the same HMAC → sanitize → metafield contract.

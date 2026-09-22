@@ -1,0 +1,6 @@
+# Local Wrangler secrets (wrangler dev). Do not commit.
+# Production: npx wrangler secret put SHOPIFY_CLIENT_ID
+#             npx wrangler secret put SHOPIFY_CLIENT_SECRET
+
+SHOPIFY_CLIENT_ID=
+SHOPIFY_CLIENT_SECRET=

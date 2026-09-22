@@ -1,61 +1,80 @@
-import express from "express";
-import dotenv from "dotenv";
 import { sanitizeOrder } from "./sanitize-order";
 import { saveSanitizedOrder } from "./shopify";
 import { verifyShopifyWebhook } from "./verify-hmac";
+import type { Env } from "./env";
 
-dotenv.config();
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const hmac = request.headers.get("X-Shopify-Hmac-SHA256");
+    const requestMeta = {
+      method: request.method,
+      path: url.pathname,
+      topic: request.headers.get("X-Shopify-Topic"),
+      shop: request.headers.get("X-Shopify-Shop-Domain"),
+      hasHmac: Boolean(hmac),
+    };
 
-const app = express();
-const port = process.env.PORT || 3000;
+    if (request.method !== "POST" || url.pathname !== "/webhooks/orders-create") {
+      console.log("Webhook result", { status: 404, ...requestMeta });
+      return new Response("Not found", { status: 404 });
+    }
 
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      (req as any).rawBody = buf;
-    },
-  })
-);
+    const secret = env.SHOPIFY_CLIENT_SECRET;
+    const rawBody = await request.arrayBuffer();
 
-app.post("/webhooks/orders-create", async (req, res) => {
-  const hmac = req.get("X-Shopify-Hmac-SHA256");
-  const secret = process.env.SHOPIFY_CLIENT_SECRET;
-  const rawBody = (req as any).rawBody as Buffer | undefined;
+    if (!hmac) {
+      console.log("Webhook result", { status: 401, message: "Missing HMAC", ...requestMeta });
+      return new Response("Missing HMAC", { status: 401 });
+    }
 
-  if (!hmac) {
-    return res.status(401).send("Missing HMAC");
-  }
+    if (!secret) {
+      console.log("Webhook result", { status: 500, message: "Server misconfigured", ...requestMeta });
+      return new Response("Server misconfigured", { status: 500 });
+    }
 
-  if (!secret) {
-    console.error("SHOPIFY_CLIENT_SECRET is not set");
-    return res.status(500).send("Server misconfigured");
-  }
+    if (!(await verifyShopifyWebhook(rawBody, hmac, secret))) {
+      console.log("Webhook result", { status: 401, message: "Invalid HMAC", ...requestMeta });
+      return new Response("Invalid HMAC", { status: 401 });
+    }
 
-  if (!verifyShopifyWebhook(rawBody, hmac, secret)) {
-    return res.status(401).send("Invalid HMAC");
-  }
+    let order: unknown;
+    try {
+      order = JSON.parse(new TextDecoder().decode(rawBody));
+    } catch {
+      console.log("Webhook result", { status: 400, message: "Invalid JSON", ...requestMeta });
+      return new Response("Invalid JSON", { status: 400 });
+    }
 
-  const sanitizedOrder = sanitizeOrder(req.body);
+    const sanitizedOrder = sanitizeOrder(order);
 
-  if (!sanitizedOrder?.orderId) {
-    return res.status(400).send("Invalid order payload");
-  }
+    if (!sanitizedOrder?.orderId) {
+      console.log("Webhook result", { status: 400, message: "Invalid order payload", ...requestMeta });
+      return new Response("Invalid order payload", { status: 400 });
+    }
 
-  try {
-    await saveSanitizedOrder(sanitizedOrder.orderId, sanitizedOrder);
-  } catch (error) {
-    console.error("Failed to save sanitized order to Shopify:", error);
-    return res.status(500).send("Failed to save order to Shopify");
-  }
+    try {
+      await saveSanitizedOrder(sanitizedOrder.orderId, sanitizedOrder, env);
+    } catch (error) {
+      console.error("Failed to save sanitized order to Shopify:", error);
+      console.log("Webhook result", {
+        status: 500,
+        message: "Failed to save order to Shopify",
+        orderId: sanitizedOrder.orderId,
+        ...requestMeta,
+      });
+      return new Response("Failed to save order to Shopify", { status: 500 });
+    }
 
-  console.log("Valid Shopify webhook", { orderId: sanitizedOrder.orderId });
+    console.log("Webhook result", {
+      status: 200,
+      orderId: sanitizedOrder.orderId,
+      ...requestMeta,
+    });
 
-  res.status(200).json({
-    success: true,
-    order: sanitizedOrder,
-  });
-});
-
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
-});
+    return Response.json({
+      success: true,
+      order: sanitizedOrder,
+    });
+  },
+};

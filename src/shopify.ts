@@ -1,8 +1,7 @@
-let cachedToken: string | null = null;
-let tokenExpiresAt = 0;
+import type { Env } from "./env";
 
-function getShopDomain(): string {
-  const storeDomain = process.env.SHOPIFY_STORE_DOMAIN
+function getShopDomain(env: Env): string {
+  const storeDomain = env.SHOPIFY_STORE_DOMAIN
     ?.replace(/^https?:\/\//, "")
     .replace(/\/$/, "");
 
@@ -31,18 +30,13 @@ async function readJson(response: Response, label: string) {
   }
 }
 
-async function getAccessToken(): Promise<string> {
-  if (cachedToken && Date.now() < tokenExpiresAt - 60_000) {
-    return cachedToken;
-  }
-
-  const shop = getShopDomain();
-  const clientId = process.env.SHOPIFY_CLIENT_ID;
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+async function getAccessToken(env: Env, shop: string): Promise<string> {
+  const clientId = env.SHOPIFY_CLIENT_ID;
+  const clientSecret = env.SHOPIFY_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
     throw new Error(
-      "Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET in .env"
+      "Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET in .dev.vars"
     );
   }
 
@@ -67,18 +61,17 @@ async function getAccessToken(): Promise<string> {
     throw new Error(`Token request failed: ${JSON.stringify(result)}`);
   }
 
-  cachedToken = result.access_token;
-  tokenExpiresAt = Date.now() + (result.expires_in ?? 86399) * 1000;
-  return cachedToken;
+  return result.access_token;
 }
 
 export async function saveSanitizedOrder(
   orderId: number,
-  payload: object
+  payload: object,
+  env: Env
 ) {
-  const shop = getShopDomain();
-  const accessToken = await getAccessToken();
-  const apiVersion = process.env.SHOPIFY_API_VERSION || "2026-07";
+  const shop = getShopDomain(env);
+  const accessToken = await getAccessToken(env, shop);
+  const apiVersion = env.SHOPIFY_API_VERSION || "2026-07";
   const apiUrl = `https://${shop}/admin/api/${apiVersion}/graphql.json`;
 
   const mutation = `

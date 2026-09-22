@@ -1,16 +1,14 @@
-import fs from "fs";
-import dotenv from "dotenv";
+import fs from "node:fs";
 import { createShopifyHmac } from "./verify-hmac";
+import { readDevVars } from "../scripts/read-dev-vars";
 
-dotenv.config();
-
-const secret = process.env.SHOPIFY_CLIENT_SECRET;
+const secret = readDevVars().SHOPIFY_CLIENT_SECRET;
 
 if (!secret) {
-  throw new Error("Missing SHOPIFY_CLIENT_SECRET in .env");
+  throw new Error("Missing SHOPIFY_CLIENT_SECRET in .dev.vars");
 }
 
-const body = fs.readFileSync("test-order.json");
+const body = new Uint8Array(fs.readFileSync("test-order.json"));
 
 console.log("HMAC:");
-console.log(createShopifyHmac(body, secret));
+console.log(await createShopifyHmac(body, secret));
